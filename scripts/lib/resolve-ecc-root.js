@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 
 const CURRENT_PLUGIN_SLUG = 'ecc';
+// Legacy install id, kept for existing installs.
 const LEGACY_PLUGIN_SLUG = 'everything-claude-code';
 const CURRENT_PLUGIN_HANDLE = `${CURRENT_PLUGIN_SLUG}@${CURRENT_PLUGIN_SLUG}`;
 const LEGACY_PLUGIN_HANDLE = `${LEGACY_PLUGIN_SLUG}@${LEGACY_PLUGIN_SLUG}`;
@@ -62,7 +63,16 @@ function resolveEccRoot(options = {}) {
   }
 
   const homeDir = options.homeDir || os.homedir();
-  const claudeDir = path.join(homeDir, '.claude');
+  const configuredDir = options.configDir !== undefined
+    ? options.configDir
+    : process.env.CLAUDE_CONFIG_DIR;
+  const rawDir = typeof configuredDir === 'string' ? configuredDir.trim() : '';
+  const expandedDir = rawDir === '~'
+    ? homeDir
+    : (rawDir.startsWith('~/') || rawDir.startsWith('~\\'))
+      ? path.join(homeDir, rawDir.slice(2))
+      : rawDir;
+  const claudeDir = expandedDir ? path.resolve(expandedDir) : path.join(homeDir, '.claude');
 
   // Decide whether a candidate directory is a usable ECC root. An explicit
   // caller probe is honored exactly (script consumers know the artifact they
@@ -126,6 +136,16 @@ function resolveEccRoot(options = {}) {
   return claudeDir;
 }
 
+function normalizePluginRootForPlatform(rootDir, platform = process.platform) {
+  if (platform !== 'win32' || typeof rootDir !== 'string') return rootDir;
+
+  const match = rootDir.match(/^\/([a-zA-Z])(?:\/(.*))?$/);
+  if (!match) return rootDir;
+
+  const [, driveLetter, rest = ''] = match;
+  return `${driveLetter.toUpperCase()}:/${rest}`;
+}
+
 /**
  * Compact inline locator for embedding in hooks.json and command .md code blocks.
  *
@@ -147,9 +167,10 @@ function resolveEccRoot(options = {}) {
  *   const _r = <paste INLINE_RESOLVE>;
  *   const sm = require(_r + '/scripts/lib/session-manager');
  */
-const INLINE_RESOLVE = `(function(){var p=require('path'),f=require('fs'),o=require('os');var e=process.env.CLAUDE_PLUGIN_ROOT;if(e&&e.trim())return e.trim();var d=p.join(o.homedir(),'.claude');function L(x){try{return require(p.join(x,'scripts','lib','resolve-ecc-root')).resolveEccRoot()}catch(_){return null}}var r=L(d);if(r)return r;var s=['ecc','ecc@ecc','marketplaces/ecc','everything-claude-code','everything-claude-code@everything-claude-code','marketplaces/everything-claude-code'];for(var i=0;i<s.length;i++){r=L(p.join(d,'plugins',s[i]));if(r)return r}try{var g=['ecc','everything-claude-code'];for(var j=0;j<g.length;j++){var c=p.join(d,'plugins','cache',g[j]);var O=f.readdirSync(c);for(var k=0;k<O.length;k++){var q=p.join(c,O[k]);var V=f.readdirSync(q);for(var m=0;m<V.length;m++){r=L(p.join(q,V[m]));if(r)return r}}}}catch(_){}return d})()`;
+const INLINE_RESOLVE = `(function(){var p=require('path'),f=require('fs'),o=require('os');var e=process.env.CLAUDE_PLUGIN_ROOT;if(e&&e.trim())return e.trim();var d=(process.env.CLAUDE_CONFIG_DIR||'').trim()||p.join(o.homedir(),'.claude');if(d==='~')d=o.homedir();else if(d.charAt(0)==='~'&&(d.charAt(1)==='/'||d.charCodeAt(1)===92))d=p.join(o.homedir(),d.slice(2));d=p.resolve(d);function L(x){try{return require(p.join(x,'scripts','lib','resolve-ecc-root')).resolveEccRoot()}catch(_){return null}}var r=L(d);if(r)return r;var s=['ecc','ecc@ecc','marketplaces/ecc','everything-claude-code','everything-claude-code@everything-claude-code','marketplaces/everything-claude-code'];for(var i=0;i<s.length;i++){r=L(p.join(d,'plugins',s[i]));if(r)return r}try{var g=['ecc','everything-claude-code'];for(var j=0;j<g.length;j++){var c=p.join(d,'plugins','cache',g[j]);var O=f.readdirSync(c);for(var k=0;k<O.length;k++){var q=p.join(c,O[k]);var V=f.readdirSync(q);for(var m=0;m<V.length;m++){r=L(p.join(q,V[m]));if(r)return r}}}}catch(_){}return d})()`;
 
 module.exports = {
   resolveEccRoot,
+  normalizePluginRootForPlatform,
   INLINE_RESOLVE,
 };

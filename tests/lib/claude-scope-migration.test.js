@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { withoutShadowingClaude } = require('./helpers/windows-test-env');
 
 const repoRoot = path.join(__dirname, '..', '..');
 const fakeClaudeScript = path.join(repoRoot, 'tests', 'fixtures', 'fake-claude-plugin.js');
@@ -100,7 +101,7 @@ function withFixture(initialState, fn) {
     process.chdir(fixture.projectRoot);
     process.env.HOME = fixture.homeDir;
     process.env.USERPROFILE = fixture.homeDir;
-    process.env.PATH = `${fixture.binDir}${path.delimiter}${previous.PATH || ''}`;
+    process.env.PATH = `${fixture.binDir}${path.delimiter}${withoutShadowingClaude(previous.PATH)}`;
     process.env.CLAUDE_CONFIG_DIR = fixture.configDir;
     process.env.ECC_TEST_CLAUDE_STATE = fixture.statePath;
     process.env.ECC_TEST_CLAUDE_CALLS = fixture.callsPath;
@@ -155,15 +156,8 @@ function captureError(fn) {
   assert.fail('Expected operation to throw');
 }
 
-function installArgv(scope, hooks = 'standard', profileOverride) {
-  const enabled = hooks !== 'off';
-  const profile = profileOverride || (hooks === 'off' ? 'standard' : hooks);
-  return [
-    'plugin', 'install', 'ecc@ecc',
-    '--scope', scope,
-    '--config', `hooks_enabled=${enabled}`,
-    '--config', `hook_profile=${profile}`,
-  ];
+function installArgv(scope) {
+  return ['plugin', 'install', 'ecc@ecc', '--scope', scope];
 }
 
 function uninstallArgv(scope) {
@@ -626,8 +620,9 @@ test('migration preserves hook preferences unless --hooks is explicit', () => {
       }
     );
     assert.ok(readCalls(fixture).some(argv => (
-      JSON.stringify(argv) === JSON.stringify(installArgv('project', 'off', 'strict'))
+      JSON.stringify(argv) === JSON.stringify(installArgv('project'))
     )));
+    assert.ok(readCalls(fixture).every(argv => !argv.includes('--config')));
   });
 
   withFixture({
