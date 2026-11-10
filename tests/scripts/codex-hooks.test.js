@@ -187,6 +187,7 @@ function runHermeticPreCommit({ content = 'safe text\n', filename = 'sample.txt'
       const staged = spawnSync('git', ['add', '--', filename], { cwd: tempDir, env: hookEnv });
       assert.strictEqual(staged.status, 0, staged.stderr?.toString());
     }
+    // Synthetic scanners drain staged input before returning so pipefail sees their intended status.
     // Keep real Git/awk available, while hiding every installed ripgrep binary.
     fs.writeFileSync(bashEnv, `
 git_path="$(command -v git)"
@@ -206,7 +207,7 @@ unset -f rg
 ${scanner === 'real' ? '# Preserve dependencies used by an actual scanner executable or wrapper.' : `PATH="${toBashPath(binDir)}"`}
 ${scanner ? `rg() {
 printf '%s\\n' "$*" >> "${toBashPath(callsPath)}"
-${scanner === 'real' ? '"$rg_path" "$@"' : scanner === 'finding' ? "printf '1:synthetic-scanner-finding\\n'; return 0;" : scanner === 'error' ? 'return 2;' : 'return 1;'}
+${scanner === 'real' ? '' : 'cat >/dev/null; '}${scanner === 'real' ? '"$rg_path" "$@"' : scanner === 'finding' ? "printf '1:synthetic-scanner-finding\\n'; return 0;" : scanner === 'error' ? 'return 2;' : 'return 1;'}
 }` : ''}
 `);
     const result = runBash(preCommitHook, {
@@ -659,7 +660,13 @@ if (
       assert.match(result.stdout, /\[FAIL\] skills missing/);
       assert.match(result.stdout, /\[FAIL\] mcpServers missing/);
       assert.match(result.stdout, /codex plugin list only confirms marketplace registration/);
-      assert.match(result.stdout, /sync-ecc-to-codex\.sh/);
+      assert.match(result.stdout, /codex plugin marketplace upgrade ecc/);
+      assert.match(result.stdout, /codex plugin add ecc@ecc/);
+      assert.match(result.stdout, /same CODEX_HOME/);
+      assert.match(result.stdout, /active plugin root/);
+      assert.match(result.stdout, /--plugin-dir ACTIVE_ROOT/);
+      assert.match(result.stdout, /--version ACTIVE_VERSION/);
+      assert.doesNotMatch(result.stdout, /npm install|sync-ecc-to-codex\.sh/);
     } finally {
       cleanup(homeDir);
     }
@@ -720,6 +727,84 @@ if (
 )
   passed++;
 else failed++;
+
+for (const scenario of [
+  {
+    name: 'rejects a missing hook file when all other references exist',
+    hooks: './hooks/codex-hooks.json',
+    targetKind: 'missing',
+    status: 1,
+    output: /\[FAIL\] hooks missing/,
+  },
+  {
+    name: 'accepts a regular hook file inside the cache',
+    hooks: './hooks/codex-hooks.json',
+    targetKind: 'file',
+    status: 0,
+    output: /\[OK\] hooks/,
+  },
+  {
+    name: 'rejects a directory in place of the hook file',
+    hooks: './hooks/codex-hooks.json',
+    targetKind: 'directory',
+    status: 1,
+    output: /\[FAIL\] hooks missing/,
+  },
+  {
+    name: 'rejects an existing hook file outside the cache',
+    hooks: '../outside-hooks.json',
+    targetKind: 'file',
+    status: 1,
+    output: /\[FAIL\] hooks escapes cache boundary/,
+  },
+  {
+    name: 'ignores non-string hooks rather than treating them as a path',
+    hooks: { hooks: {} },
+    status: 0,
+    output: /All cached manifest references resolve/,
+  },
+]) {
+  if (
+    test(`check-plugin-cache ${scenario.name}`, () => {
+      const homeDir = createTempDir('codex-plugin-cache-hooks-home-');
+      const codexDir = path.join(homeDir, '.codex');
+
+      try {
+        const cacheDir = seedPluginCache(codexDir, {
+          ...cacheManifestWithLocalRefs,
+          hooks: scenario.hooks,
+        }, [
+          ['.mcp.json', '{"mcpServers":{}}\n'],
+          ['assets/ecc-icon.svg', '<svg />\n'],
+          ['assets/hero.png', 'png\n'],
+        ]);
+        fs.mkdirSync(path.join(cacheDir, 'skills'), { recursive: true });
+        if (scenario.targetKind === 'file') {
+          writeJson(path.resolve(cacheDir, scenario.hooks), { hooks: {} });
+        } else if (scenario.targetKind === 'directory') {
+          fs.mkdirSync(path.resolve(cacheDir, scenario.hooks), { recursive: true });
+        }
+
+        const result = runNode(
+          pluginCacheCheckScript,
+          ['--plugin-dir', cacheDir],
+          makeHermeticCodexEnv(homeDir, codexDir)
+        );
+
+        assert.strictEqual(result.status, scenario.status, `${result.stdout}\n${result.stderr}`);
+        assert.match(result.stdout, scenario.output);
+        assert.strictEqual(result.stderr, '');
+        if (scenario.status !== 0) {
+          assert.doesNotMatch(result.stdout, /All cached manifest references resolve/);
+        }
+      } finally {
+        cleanup(homeDir);
+      }
+    })
+  )
+    passed++;
+  else failed++;
+}
 
 if (
   test('check-plugin-cache reports a missing installed cache clearly', () => {
